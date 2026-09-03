@@ -1,0 +1,157 @@
+generator client {
+  provider        = "prisma-client-js"
+  previewFeatures = ["postgresqlExtensions"]
+}
+
+datasource db {
+  provider   = "postgresql"
+  url        = env("DATABASE_URL")
+  directUrl  = env("DIRECT_URL")
+  extensions = [vector]
+}
+
+enum UserRole {
+  USER
+  ADMIN
+  SUPER_ADMIN
+}
+
+enum DocumentStatus {
+  DRAFT
+  PUBLISHED
+}
+
+enum MessageRole {
+  USER
+  ASSISTANT
+}
+
+model User {
+  id        String   @id @default(uuid())
+  googleId  String   @unique @map("google_id")
+  name      String?
+  email     String?
+  image     String?
+  role      UserRole @default(USER)
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  chatSessions ChatSession[]
+  messageUsage MessageUsage?
+  uploadedDocs LawDocument[]      @relation("LawDocumentUploadedBy")
+  activityLogs AdminActivityLog[] @relation("AdminActivityActor")
+
+  @@map("users")
+}
+
+model LawCategory {
+  id        String        @id @default(uuid())
+  name      String
+  slug      String        @unique
+  parentId  String?       @map("parent_id")
+  parent    LawCategory?  @relation("LawCategoryTree", fields: [parentId], references: [id], onDelete: SetNull)
+  children  LawCategory[] @relation("LawCategoryTree")
+  documents LawDocument[]
+  createdAt DateTime      @default(now()) @map("created_at")
+  updatedAt DateTime      @updatedAt @map("updated_at")
+
+  @@map("law_categories")
+}
+
+model LawDocument {
+  id           String             @id @default(uuid())
+  categoryId   String?            @map("category_id")
+  category     LawCategory?       @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+  title        String
+  sourceRef    String?            @map("source_ref")
+  status       DocumentStatus     @default(DRAFT)
+  fileUrl      String             @map("file_url")
+  fileName     String?            @map("file_name")
+  uploadedById String?            @map("uploaded_by_id")
+  uploadedBy   User?              @relation("LawDocumentUploadedBy", fields: [uploadedById], references: [id], onDelete: SetNull)
+  chunks       LawDocumentChunk[]
+  createdAt    DateTime           @default(now()) @map("created_at")
+  updatedAt    DateTime           @updatedAt @map("updated_at")
+
+  @@map("law_documents")
+}
+
+model LawDocumentChunk {
+  id              String                       @id @default(uuid())
+  documentId      String                       @map("document_id")
+  document        LawDocument                  @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  content         String                       @db.Text
+  // Nepali source text, populated only when this chunk was translated
+  // (content then holds the English translation that gets embedded).
+  // Null for chunks that were already in English — nothing changes for
+  // those.
+  originalContent String?                      @map("original_content") @db.Text
+  sectionRef      String?                      @map("section_ref")
+  embedding       Unsupported("vector(1536)")?
+  createdAt       DateTime                     @default(now()) @map("created_at")
+  updatedAt       DateTime                     @updatedAt @map("updated_at")
+
+  @@map("law_document_chunks")
+}
+
+model ChatSession {
+  id              String        @id @default(uuid())
+  userId          String?       @map("user_id")
+  user            User?         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  title           String?
+  isPublicPreview Boolean       @default(false) @map("is_public_preview")
+  messages        ChatMessage[]
+  createdAt       DateTime      @default(now()) @map("created_at")
+  updatedAt       DateTime      @updatedAt @map("updated_at")
+
+  @@map("chat_sessions")
+}
+
+model ChatMessage {
+  id         String             @id @default(uuid())
+  sessionId  String             @map("session_id")
+  session    ChatSession        @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  role       MessageRole
+  content    String             @db.Text
+  attachment MessageAttachment?
+  createdAt  DateTime           @default(now()) @map("created_at")
+  updatedAt  DateTime           @updatedAt @map("updated_at")
+
+  @@map("chat_messages")
+}
+
+model MessageAttachment {
+  id            String      @id @default(uuid())
+  messageId     String      @unique @map("message_id")
+  message       ChatMessage @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  fileUrl       String      @map("file_url")
+  mimeType      String?     @map("mime_type")
+  extractedText String?     @map("extracted_text") @db.Text
+  createdAt     DateTime    @default(now()) @map("created_at")
+  updatedAt     DateTime    @updatedAt @map("updated_at")
+
+  @@map("message_attachments")
+}
+
+model MessageUsage {
+  userId        String   @id @map("user_id")
+  user          User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  messageCount  Int      @default(0) @map("message_count")
+  pdfCount      Int      @default(0) @map("pdf_count")
+  windowStartAt DateTime @map("window_start_at")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+
+  @@map("user_message_usage")
+}
+
+model AdminActivityLog {
+  id        String   @id @default(uuid())
+  actorId   String?  @map("actor_id")
+  actor     User?    @relation("AdminActivityActor", fields: [actorId], references: [id], onDelete: SetNull)
+  action    String
+  details   Json?
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("admin_activity_logs")
+}

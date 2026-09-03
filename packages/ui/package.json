@@ -1,0 +1,14 @@
+{
+  "name": "@repo/ui",
+  "private": true,
+  "version": "0.1.0",
+  "scripts": {
+    "build": "echo \"No build yet\"",
+    "lint": "echo \"No lint config yet\"",
+    "test": "echo \"No tests yet\""
+  },
+  "peerDependencies": {
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  }
+}

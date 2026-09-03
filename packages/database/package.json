@@ -1,0 +1,23 @@
+{
+  "name": "@repo/database",
+  "private": true,
+  "version": "0.1.0",
+  "main": "./dist/src/index.js",
+  "types": "./dist/src/index.d.ts",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "lint": "echo \"No lint config yet\"",
+    "test": "echo \"No tests yet\"",
+    "prisma": "prisma",
+    "generate": "prisma generate",
+    "postinstall": "prisma generate && tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@prisma/client": "^5.22.0"
+  },
+  "devDependencies": {
+    "@types/node": "20.14.12",
+    "prisma": "^5.22.0",
+    "typescript": "5.5.4"
+  }
+}

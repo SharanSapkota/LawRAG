@@ -1,0 +1,13 @@
+{
+  "name": "@repo/shared-types",
+  "private": true,
+  "version": "0.1.0",
+  "scripts": {
+    "build": "echo \"No build yet\"",
+    "lint": "echo \"No lint config yet\"",
+    "test": "echo \"No tests yet\""
+  },
+  "devDependencies": {
+    "typescript": "5.5.4"
+  }
+}
