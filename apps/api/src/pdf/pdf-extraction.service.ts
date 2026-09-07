@@ -63,8 +63,10 @@ export class PdfExtractionService {
 
   async extractText(buffer: Buffer): Promise<string> {
     const pdfjsLib = await loadPdfjs();
-    const doc = await pdfjsLib.getDocument({ data: new Uint8Array(buffer) }).promise;
-
+    const doc = await pdfjsLib.getDocument({
+          data: new Uint8Array(buffer),
+          standardFontDataUrl: "node_modules/pdfjs-dist/standard_fonts/",
+        }).promise;
     let text = "";
     for (let pageNum = 1; pageNum <= doc.numPages; pageNum++) {
       const page = await doc.getPage(pageNum);
