@@ -1,10 +1,9 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import Link from "next/link";
-import { useSession } from "next-auth/react";
+import { signIn, signOut, useSession } from "next-auth/react";
 import {
-  ApiError,
   createCategory,
   listCategories,
   listDocuments,
@@ -14,8 +13,257 @@ import {
   uploadDocument,
 } from "../../lib/api";
 import type { LawCategoryData, LawDocumentListItem } from "../../lib/types";
+import { isAdminRole } from "../../lib/constants";
+import { getDocumentStage } from "../../lib/documents";
+import { getErrorMessage } from "../../lib/format";
+import { BrandMark, GoogleGlyph } from "../../components/Brand";
+import { DocumentsTable, type BusyDocument } from "../../components/admin/DocumentsTable";
+import { UploadCard } from "../../components/admin/UploadCard";
+import { CategoriesCard } from "../../components/admin/CategoriesCard";
+import { Alert } from "../../components/ui/Alert";
+import { Button } from "../../components/ui/Button";
+import { EmptyState } from "../../components/ui/EmptyState";
+import { Icon } from "../../components/ui/Icon";
+import { Spinner } from "../../components/ui/Spinner";
+import { ToastProvider, useToast } from "../../components/ui/Toast";
 
-const ADMIN_ROLES = new Set(["ADMIN", "SUPER_ADMIN"]);
+function AdminTopbar() {
+  return (
+    <header className="admin-topbar">
+      <div className="admin-topbar-inner">
+        <Link href="/" className="admin-brand-link" aria-label="Back to research">
+          <BrandMark compact />
+        </Link>
+        <span className="admin-topbar-divider" aria-hidden="true" />
+        <span className="admin-topbar-section">Document library</span>
+        <Link href="/" className="btn btn-ghost btn-sm admin-back-link">
+          <Icon name="arrowLeft" size={15} />
+          <span>Back to research</span>
+        </Link>
+      </div>
+    </header>
+  );
+}
+
+function PageState({ children }: { children: ReactNode }) {
+  return (
+    <div className="admin-page">
+      <AdminTopbar />
+      <main className="page-state">
+        <div className="card page-state-card">{children}</div>
+      </main>
+    </div>
+  );
+}
+
+const WORKFLOW_STEPS = [
+  { title: "Upload", text: "Add a PDF to the library as a draft." },
+  { title: "Process", text: "Extract the text and index it into searchable passages." },
+  { title: "Publish", text: "Make it available to the research assistant." },
+];
+
+function AdminDashboard({ token }: { token: string }) {
+  const toast = useToast();
+
+  const [categories, setCategories] = useState<LawCategoryData[]>([]);
+  const [documents, setDocuments] = useState<LawDocumentListItem[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [busy, setBusy] = useState<BusyDocument | null>(null);
+  const [documentActionError, setDocumentActionError] = useState<string | null>(null);
+
+  const refresh = useCallback(async () => {
+    setLoadError(null);
+    try {
+      const [cats, docs] = await Promise.all([listCategories(), listDocuments(token)]);
+      setCategories(cats);
+      setDocuments(docs);
+    } catch (err) {
+      setLoadError(getErrorMessage(err, "Failed to load the document library."));
+    } finally {
+      setIsLoading(false);
+    }
+  }, [token]);
+
+  useEffect(() => {
+    void refresh();
+  }, [refresh]);
+
+  const stats = useMemo(() => {
+    const result = { total: documents.length, published: 0, ready: 0, unprocessed: 0, passages: 0 };
+    for (const doc of documents) {
+      result[getDocumentStage(doc)] += 1;
+      if (doc.status === "PUBLISHED") result.passages += doc.chunkCount;
+    }
+    return result;
+  }, [documents]);
+
+  const handleCreateCategory = useCallback(
+    async (name: string, parentId?: string): Promise<string | null> => {
+      try {
+        await createCategory(name, token, parentId);
+        toast(`Category “${name}” created`);
+        await refresh();
+        return null;
+      } catch (err) {
+        return getErrorMessage(err, "Failed to create the category.");
+      }
+    },
+    [token, toast, refresh],
+  );
+
+  const handleUpload = useCallback(
+    async (input: { categoryId: string; title?: string; file: File }): Promise<string | null> => {
+      try {
+        const doc = await uploadDocument(input, token);
+        toast(`“${doc.title}” uploaded. Process it next to make it searchable.`);
+        await refresh();
+        return null;
+      } catch (err) {
+        return getErrorMessage(err, "Failed to upload the document.");
+      }
+    },
+    [token, toast, refresh],
+  );
+
+  const handleProcess = useCallback(
+    async (doc: LawDocumentListItem) => {
+      setBusy({ id: doc.id, action: "process" });
+      setDocumentActionError(null);
+      try {
+        const { chunkCount } = await processDocument(doc.id, token);
+        toast(`“${doc.title}” processed into ${chunkCount.toLocaleString()} passages`);
+        await refresh();
+      } catch (err) {
+        setDocumentActionError(getErrorMessage(err, `Failed to process “${doc.title}”.`));
+      } finally {
+        setBusy(null);
+      }
+    },
+    [token, toast, refresh],
+  );
+
+  const handlePublish = useCallback(
+    async (doc: LawDocumentListItem) => {
+      setBusy({ id: doc.id, action: "publish" });
+      setDocumentActionError(null);
+      try {
+        await publishDocument(doc.id, token);
+        toast(`“${doc.title}” is now live in research`);
+        await refresh();
+      } catch (err) {
+        setDocumentActionError(getErrorMessage(err, `Failed to publish “${doc.title}”.`));
+      } finally {
+        setBusy(null);
+      }
+    },
+    [token, toast, refresh],
+  );
+
+  const handleRename = useCallback(
+    async (doc: LawDocumentListItem, title: string): Promise<boolean> => {
+      setBusy({ id: doc.id, action: "rename" });
+      setDocumentActionError(null);
+      try {
+        await renameDocument(doc.id, title, token);
+        toast("Document renamed");
+        await refresh();
+        return true;
+      } catch (err) {
+        setDocumentActionError(getErrorMessage(err, "Failed to rename the document."));
+        return false;
+      } finally {
+        setBusy(null);
+      }
+    },
+    [token, toast, refresh],
+  );
+
+  return (
+    <main className="admin-main">
+      <div className="page-header">
+        <div>
+          <h1 className="page-title">Document library</h1>
+          <p className="page-description">
+            Manage the statutes and legal documents the research assistant draws on.
+          </p>
+        </div>
+      </div>
+
+      {loadError ? (
+        <Alert
+          tone="error"
+          title="Couldn't load the library"
+          action={
+            <Button size="sm" icon={<Icon name="refresh" size={14} />} onClick={() => void refresh()}>
+              Retry
+            </Button>
+          }
+        >
+          {loadError}
+        </Alert>
+      ) : null}
+
+      <dl className="stat-grid">
+        <div className="stat">
+          <dt>Documents</dt>
+          <dd>{isLoading ? "–" : stats.total}</dd>
+        </div>
+        <div className="stat">
+          <dt>Published</dt>
+          <dd>{isLoading ? "–" : stats.published}</dd>
+          <span className="stat-sub">{stats.passages.toLocaleString()} searchable passages</span>
+        </div>
+        <div className="stat">
+          <dt>Ready to publish</dt>
+          <dd>{isLoading ? "–" : stats.ready}</dd>
+        </div>
+        <div className={`stat${stats.unprocessed > 0 ? " stat-attention" : ""}`}>
+          <dt>Needs processing</dt>
+          <dd>{isLoading ? "–" : stats.unprocessed}</dd>
+        </div>
+      </dl>
+
+      <ol className="workflow" aria-label="How documents go live">
+        {WORKFLOW_STEPS.map((step, index) => (
+          <li key={step.title}>
+            <span className="workflow-step">{index + 1}</span>
+            <div>
+              <p className="workflow-title">{step.title}</p>
+              <p className="workflow-text">{step.text}</p>
+            </div>
+          </li>
+        ))}
+      </ol>
+
+      <div className="admin-grid">
+        <div className="admin-grid-main">
+          {documentActionError ? (
+            <Alert tone="error" onDismiss={() => setDocumentActionError(null)}>
+              {documentActionError}
+            </Alert>
+          ) : null}
+          <DocumentsTable
+            documents={documents}
+            isLoading={isLoading}
+            busy={busy}
+            onProcess={handleProcess}
+            onPublish={handlePublish}
+            onRename={handleRename}
+          />
+        </div>
+        <aside className="admin-grid-side" aria-label="Library tools">
+          <div className="admin-upload">
+            <UploadCard categories={categories} onUpload={handleUpload} />
+          </div>
+          <div className="admin-categories">
+            <CategoriesCard categories={categories} documents={documents} onCreate={handleCreateCategory} />
+          </div>
+        </aside>
+      </div>
+    </main>
+  );
+}
 
 export default function AdminPage() {
   const { data: authSession, status } = useSession();
@@ -23,335 +271,74 @@ export default function AdminPage() {
   // Client-side check is UX only — the real enforcement is RolesGuard on
   // the API. A non-admin who forces this page open still gets 403s on
   // every request below.
-  const isAdmin = Boolean(authSession?.nestRole && ADMIN_ROLES.has(authSession.nestRole));
-
-  const [categories, setCategories] = useState<LawCategoryData[]>([]);
-  const [documents, setDocuments] = useState<LawDocumentListItem[]>([]);
-  const [loadError, setLoadError] = useState<string | null>(null);
-
-  const [newCategoryName, setNewCategoryName] = useState("");
-  const [newCategoryParentId, setNewCategoryParentId] = useState("");
-  const [categoryActionError, setCategoryActionError] = useState<string | null>(null);
-  const [isCreatingCategory, setIsCreatingCategory] = useState(false);
-
-  const [uploadCategoryId, setUploadCategoryId] = useState("");
-  const [uploadTitle, setUploadTitle] = useState("");
-  const [uploadFile, setUploadFile] = useState<File | null>(null);
-  const [isUploading, setIsUploading] = useState(false);
-  const [uploadError, setUploadError] = useState<string | null>(null);
-
-  const [busyDocumentId, setBusyDocumentId] = useState<string | null>(null);
-  const [documentActionError, setDocumentActionError] = useState<string | null>(null);
-  const [renamingDocumentId, setRenamingDocumentId] = useState<string | null>(null);
-  const [renameValue, setRenameValue] = useState("");
-
-  const refresh = useCallback(async () => {
-    if (!token) return;
-    setLoadError(null);
-    try {
-      const [cats, docs] = await Promise.all([listCategories(), listDocuments(token)]);
-      setCategories(cats);
-      setDocuments(docs);
-    } catch (err) {
-      setLoadError(err instanceof Error ? err.message : "Failed to load admin data.");
-    }
-  }, [token]);
-
-  useEffect(() => {
-    if (isAdmin && token) void refresh();
-  }, [isAdmin, token, refresh]);
-
-  const handleCreateCategory = async (event: React.FormEvent) => {
-    event.preventDefault();
-    if (!token || !newCategoryName.trim()) return;
-
-    setIsCreatingCategory(true);
-    setCategoryActionError(null);
-    try {
-      await createCategory(newCategoryName.trim(), token, newCategoryParentId || undefined);
-      setNewCategoryName("");
-      setNewCategoryParentId("");
-      await refresh();
-    } catch (err) {
-      setCategoryActionError(err instanceof Error ? err.message : "Failed to create category.");
-    } finally {
-      setIsCreatingCategory(false);
-    }
-  };
-
-  const handleUpload = async (event: React.FormEvent) => {
-    event.preventDefault();
-    if (!token || !uploadCategoryId || !uploadFile) return;
-
-    setIsUploading(true);
-    setUploadError(null);
-    try {
-      await uploadDocument(
-        { categoryId: uploadCategoryId, title: uploadTitle || undefined, file: uploadFile },
-        token,
-      );
-      setUploadTitle("");
-      setUploadFile(null);
-      await refresh();
-    } catch (err) {
-      setUploadError(
-        err instanceof ApiError ? err.message : "Failed to upload document.",
-      );
-    } finally {
-      setIsUploading(false);
-    }
-  };
-
-  const handleProcess = async (id: string) => {
-    if (!token) return;
-    setBusyDocumentId(id);
-    setDocumentActionError(null);
-    try {
-      await processDocument(id, token);
-      await refresh();
-    } catch (err) {
-      setDocumentActionError(err instanceof Error ? err.message : "Failed to process document.");
-    } finally {
-      setBusyDocumentId(null);
-    }
-  };
-
-  const startRename = (doc: LawDocumentListItem) => {
-    setRenamingDocumentId(doc.id);
-    setRenameValue(doc.title);
-    setDocumentActionError(null);
-  };
-
-  const cancelRename = () => {
-    setRenamingDocumentId(null);
-    setRenameValue("");
-  };
-
-  const handleRename = async (id: string) => {
-    if (!token || !renameValue.trim()) return;
-    setBusyDocumentId(id);
-    setDocumentActionError(null);
-    try {
-      await renameDocument(id, renameValue.trim(), token);
-      setRenamingDocumentId(null);
-      setRenameValue("");
-      await refresh();
-    } catch (err) {
-      setDocumentActionError(err instanceof Error ? err.message : "Failed to rename document.");
-    } finally {
-      setBusyDocumentId(null);
-    }
-  };
-
-  const handlePublish = async (id: string) => {
-    if (!token) return;
-    setBusyDocumentId(id);
-    setDocumentActionError(null);
-    try {
-      await publishDocument(id, token);
-      await refresh();
-    } catch (err) {
-      setDocumentActionError(err instanceof Error ? err.message : "Failed to publish document.");
-    } finally {
-      setBusyDocumentId(null);
-    }
-  };
+  const isAdmin = isAdminRole(authSession?.nestRole);
 
   if (status === "loading") {
     return (
-      <main className="admin-shell">
-        <p>Loading…</p>
-      </main>
+      <PageState>
+        <div className="page-state-loading">
+          <Spinner size={22} label="Loading" />
+        </div>
+      </PageState>
     );
   }
 
   if (!authSession) {
     return (
-      <main className="admin-shell">
-        <p>Sign in to access the admin panel.</p>
-        <Link href="/">Back to chat</Link>
-      </main>
+      <PageState>
+        <EmptyState
+          icon="shield"
+          title="Sign in to manage the library"
+          description="The document library is available to firm administrators."
+          action={
+            <div className="button-row">
+              <button type="button" className="btn btn-primary btn-md" onClick={() => signIn("google")}>
+                <GoogleGlyph />
+                Continue with Google
+              </button>
+              <Link href="/" className="btn btn-ghost btn-md">
+                Back to research
+              </Link>
+            </div>
+          }
+        />
+      </PageState>
     );
   }
 
-  if (!isAdmin) {
+  if (!isAdmin || !token) {
     return (
-      <main className="admin-shell">
-        <p>Your account doesn&apos;t have admin access.</p>
-        <p className="admin-hint">
-          If your role was just changed, sign out and back in — the role is baked into your
-          session token at sign-in time and isn&apos;t re-checked live.
-        </p>
-        <Link href="/">Back to chat</Link>
-      </main>
+      <PageState>
+        <EmptyState
+          icon="shield"
+          title="You don't have access to this page"
+          description={
+            <>
+              Ask a firm administrator to grant your account admin access. If your role was just
+              changed, sign out and back in — roles are applied when you sign in.
+            </>
+          }
+          action={
+            <div className="button-row">
+              <Link href="/" className="btn btn-primary btn-md">
+                Back to research
+              </Link>
+              <button type="button" className="btn btn-secondary btn-md" onClick={() => signOut()}>
+                Sign out
+              </button>
+            </div>
+          }
+        />
+      </PageState>
     );
   }
 
   return (
-    <main className="admin-shell">
-      <div className="admin-header">
-        <h1>Admin — Law Documents</h1>
-        <Link href="/">Back to chat</Link>
+    <ToastProvider>
+      <div className="admin-page">
+        <AdminTopbar />
+        <AdminDashboard token={token} />
       </div>
-
-      {loadError ? <div className="banner banner-error">{loadError}</div> : null}
-
-      <section className="admin-section">
-        <h2>Categories</h2>
-        <form className="admin-form" onSubmit={handleCreateCategory}>
-          <input
-            type="text"
-            placeholder="Category name (e.g. Companies Act)"
-            value={newCategoryName}
-            onChange={(e) => setNewCategoryName(e.target.value)}
-            required
-          />
-          <select
-            value={newCategoryParentId}
-            onChange={(e) => setNewCategoryParentId(e.target.value)}
-          >
-            <option value="">No parent (top-level)</option>
-            {categories.map((cat) => (
-              <option key={cat.id} value={cat.id}>
-                {cat.name}
-              </option>
-            ))}
-          </select>
-          <button type="submit" disabled={isCreatingCategory || !newCategoryName.trim()}>
-            {isCreatingCategory ? "Creating…" : "Create category"}
-          </button>
-        </form>
-        {categoryActionError ? (
-          <div className="banner banner-error">{categoryActionError}</div>
-        ) : null}
-
-        {categories.length === 0 ? (
-          <p className="admin-hint">No categories yet — create one above before uploading.</p>
-        ) : (
-          <ul className="admin-list">
-            {categories.map((cat) => (
-              <li key={cat.id}>{cat.name}</li>
-            ))}
-          </ul>
-        )}
-      </section>
-
-      <section className="admin-section">
-        <h2>Upload a document</h2>
-        <form className="admin-form" onSubmit={handleUpload}>
-          <select
-            value={uploadCategoryId}
-            onChange={(e) => setUploadCategoryId(e.target.value)}
-            required
-          >
-            <option value="">Select a category…</option>
-            {categories.map((cat) => (
-              <option key={cat.id} value={cat.id}>
-                {cat.name}
-              </option>
-            ))}
-          </select>
-          <input
-            type="text"
-            placeholder="Title (optional, defaults to filename)"
-            value={uploadTitle}
-            onChange={(e) => setUploadTitle(e.target.value)}
-          />
-          <input
-            type="file"
-            accept="application/pdf"
-            onChange={(e) => setUploadFile(e.target.files?.[0] ?? null)}
-            required
-          />
-          <button type="submit" disabled={isUploading || !uploadCategoryId || !uploadFile}>
-            {isUploading ? "Uploading…" : "Upload"}
-          </button>
-        </form>
-        <p className="admin-hint">PDF only in v1.</p>
-        {uploadError ? <div className="banner banner-error">{uploadError}</div> : null}
-      </section>
-
-      <section className="admin-section">
-        <h2>Documents</h2>
-        {documentActionError ? (
-          <div className="banner banner-error">{documentActionError}</div>
-        ) : null}
-        {documents.length === 0 ? (
-          <p className="admin-hint">No documents uploaded yet.</p>
-        ) : (
-          <table className="admin-table">
-            <thead>
-              <tr>
-                <th>Title</th>
-                <th>Category</th>
-                <th>Status</th>
-                <th>Chunks</th>
-                <th>Actions</th>
-              </tr>
-            </thead>
-            <tbody>
-              {documents.map((doc) => (
-                <tr key={doc.id}>
-                  <td>
-                    {renamingDocumentId === doc.id ? (
-                      <div className="admin-rename-row">
-                        <input
-                          type="text"
-                          value={renameValue}
-                          onChange={(e) => setRenameValue(e.target.value)}
-                          autoFocus
-                        />
-                        <button
-                          type="button"
-                          onClick={() => handleRename(doc.id)}
-                          disabled={busyDocumentId === doc.id || !renameValue.trim()}
-                        >
-                          Save
-                        </button>
-                        <button type="button" onClick={cancelRename}>
-                          Cancel
-                        </button>
-                      </div>
-                    ) : (
-                      doc.title
-                    )}
-                  </td>
-                  <td>{doc.category?.name ?? "—"}</td>
-                  <td>
-                    <span className={`status-badge status-${doc.status.toLowerCase()}`}>
-                      {doc.status}
-                    </span>
-                  </td>
-                  <td>{doc.chunkCount}</td>
-                  <td className="admin-table-actions">
-                    <button type="button" onClick={() => startRename(doc)}>
-                      Rename
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => handleProcess(doc.id)}
-                      disabled={busyDocumentId === doc.id}
-                    >
-                      {busyDocumentId === doc.id ? "Working…" : "Process"}
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => handlePublish(doc.id)}
-                      disabled={
-                        busyDocumentId === doc.id ||
-                        doc.status === "PUBLISHED" ||
-                        doc.chunkCount === 0
-                      }
-                    >
-                      Publish
-                    </button>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        )}
-      </section>
-    </main>
+    </ToastProvider>
   );
 }

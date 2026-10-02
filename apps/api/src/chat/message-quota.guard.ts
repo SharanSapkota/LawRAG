@@ -79,7 +79,7 @@ export class MessageQuotaGuard implements CanActivate {
           error: "MESSAGE_QUOTA_EXCEEDED",
           // TODO(decisions.md O4): exact user-facing copy for the
           // "come back in X hours" message is still an open product decision.
-          message: "Message limit reached for this window. Email iamsharan77@gmail.com to increase your limit. Or",
+          message: "Message limit reached for this window. Email iamsharan77@gmail.com to increase your limit.",
           retryAfter: retryAfter.toISOString(),
         },
         HttpStatus.TOO_MANY_REQUESTS,

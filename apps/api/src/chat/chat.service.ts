@@ -186,7 +186,7 @@ export class ChatService {
               // TODO(decisions.md O4): exact user-facing copy for the
               // "come back in X hours" message is still an open product decision.
               message:
-                "Message limit reached for this window. email iamsharan77@gmail.com to increase your limit.",
+                "Message limit reached for this window. Email iamsharan77@gmail.com to increase your limit.",
               retryAfter,
             },
             HttpStatus.TOO_MANY_REQUESTS,
