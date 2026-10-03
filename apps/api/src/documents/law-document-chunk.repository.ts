@@ -8,6 +8,7 @@ export interface InsertChunkInput {
   originalContent: string | null;
   sectionRef: string | null;
   embedding: number[];
+  originalEmbedding: any;
 }
 
 export interface SimilarChunkResult {

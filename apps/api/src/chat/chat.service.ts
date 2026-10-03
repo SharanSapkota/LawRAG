@@ -108,6 +108,15 @@ export class ChatService {
    * nothing unit. The AI response is generated and inserted afterward, as
    * its own step — CLAUDE.md's transactional requirement covers the user
    * message, attachment, and counter increment, not the AI reply.
+   *
+   * FOLLOW-UPS: before generating the reply, we load the session's prior
+   * messages and hand them to aiService as `history`. This is what makes
+   * "what about section 5?" or "explain that in simple English" work —
+   * the model (and, on the retrieval side, the query-condensing step
+   * inside aiService) sees the whole conversation, not just this one
+   * message in isolation. History is read fresh here rather than reused
+   * from `getSessionForRequest` because that method's `messages` include
+   * isn't guaranteed to be ordered the way retrieval needs.
    */
   async sendMessage(
     user: AuthenticatedRequestUser,
@@ -128,6 +137,16 @@ export class ChatService {
     }
 
     const hasPdfAttachment = Boolean(attachment);
+
+    // Prior turns for this session, oldest first — used both to give the
+    // model conversational memory and (inside aiService) to condense
+    // follow-ups like "explain that in simple English" into a retrievable,
+    // context-complete query before running retrieval.
+    const priorMessages = await prisma.chatMessage.findMany({
+      where: { sessionId },
+      orderBy: { createdAt: "asc" },
+      select: { role: true, content: true },
+    });
 
     const userMessage = await prisma.$transaction(async (tx) => {
       const session = await tx.chatSession.findUnique({ where: { id: sessionId } });
@@ -230,6 +249,10 @@ export class ChatService {
     const aiResult = await this.aiService.generateResponse({
       userMessage: content,
       pdfContext: attachment?.extractedText,
+      // Everything strictly before this turn — the just-inserted
+      // userMessage is passed separately as `userMessage` above, so it's
+      // not duplicated here.
+      history: priorMessages.map((m) => ({ role: m.role, content: m.content })),
     });
 
     const aiMessage = await prisma.chatMessage.create({

@@ -81,6 +81,14 @@ export class DocumentsService {
    * a document that mixes Nepali and English sections is handled
    * correctly instead of all-or-nothing.
    *
+   * HYBRID EMBEDDING: a Nepali chunk gets TWO embeddings — one of its
+   * English translation (`embedding`, over `content`) and one of the
+   * original Nepali text (`originalEmbedding`, over `originalContent`).
+   * This is what lets retrieval match a query regardless of whether the
+   * user asks in Nepali or English, without ever needing to translate
+   * the query itself. English-only chunks only get the one embedding —
+   * there's nothing distinct to embed a second time.
+   *
    * Translation + embedding calls happen outside the transaction
    * (external I/O shouldn't hold a DB transaction open); the
    * delete-then-reinsert is atomic so a document's chunk set is never
@@ -108,57 +116,60 @@ export class DocumentsService {
     const fileBuffer = await this.storageService.downloadFile(key);
     const extractedText = await this.pdfExtractionService.extractText(fileBuffer);
     const rawChunks = chunkText(extractedText);
-    let processedCount = 0;
-    for (const chunk of rawChunks) {
-  processedCount++;
-  console.log(`Processing chunk ${processedCount}/${rawChunks.length}`);
-  // ...
-}
 
     const preparedChunks: Array<{
       content: string;
       originalContent: string | null;
       sectionRef: string | null;
       embedding: number[];
+      originalEmbedding: any;
     }> = [];
 
     for (const chunk of rawChunks) {
       let content = chunk.content;
       let originalContent: string | null = null;
+      let originalEmbedding: number[] | null = null;
 
       if (isPredominantlyDevanagari(chunk.content)) {
         originalContent = chunk.content;
         content = await this.translationService.translateToEnglish(chunk.content);
+        // Second embedding call: only for chunks that actually have a
+        // distinct original-language text to embed.
+        originalEmbedding = await this.embeddingService.embed(originalContent);
       }
-      console.log('0000')
 
       const embedding = await this.embeddingService.embed(content);
-      preparedChunks.push({ content, originalContent, sectionRef: chunk.sectionRef, embedding });
+      preparedChunks.push({
+        content,
+        originalContent,
+        sectionRef: chunk.sectionRef,
+        embedding,
+        originalEmbedding,
+      });
     }
 
-    const chunkCount = await prisma.$transaction(async (tx) => {
-      await this.chunkRepository.deleteAllForDocument(tx, documentId);
-      console.log('0200')
+    const chunkCount = await prisma.$transaction(
+      async (tx) => {
+        await this.chunkRepository.deleteAllForDocument(tx, documentId);
 
-      for (const chunk of preparedChunks) {
-        console.log(`Inserting chunk for document ${documentId}: ${chunk.sectionRef ?? "no section ref"}`);
-        await this.chunkRepository.insertChunk(tx, {
-          documentId,
-          content: chunk.content,
-          originalContent: chunk.originalContent,
-          sectionRef: chunk.sectionRef,
-          embedding: chunk.embedding,
-        });
-        console.log(`Inserted chunk for document ${documentId}: ${chunk.sectionRef ?? "no section ref"}`);
-      }
+        for (const chunk of preparedChunks) {
+          await this.chunkRepository.insertChunk(tx, {
+            documentId,
+            content: chunk.content,
+            originalContent: chunk.originalContent,
+            sectionRef: chunk.sectionRef,
+            embedding: chunk.embedding,
+            originalEmbedding: chunk.originalEmbedding,
+          });
+        }
 
-      return preparedChunks.length;
-    },
-  {
-    timeout: 60 * 60 * 1000, // 1 hour
-    maxWait: 60 * 1000,
-  });
-    console.log('0300')
+        return preparedChunks.length;
+      },
+      {
+        timeout: 60 * 60 * 1000, // 1 hour
+        maxWait: 60 * 1000,
+      },
+    );
 
     return { chunkCount };
   }

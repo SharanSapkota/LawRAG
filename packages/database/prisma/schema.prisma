@@ -77,19 +77,33 @@ model LawDocument {
 }
 
 model LawDocumentChunk {
-  id              String                       @id @default(uuid())
-  documentId      String                       @map("document_id")
-  document        LawDocument                  @relation(fields: [documentId], references: [id], onDelete: Cascade)
-  content         String                       @db.Text
-  // Nepali source text, populated only when this chunk was translated
-  // (content then holds the English translation that gets embedded).
-  // Null for chunks that were already in English — nothing changes for
-  // those.
-  originalContent String?                      @map("original_content") @db.Text
-  sectionRef      String?                      @map("section_ref")
-  embedding       Unsupported("vector(1536)")?
-  createdAt       DateTime                     @default(now()) @map("created_at")
-  updatedAt       DateTime                     @updatedAt @map("updated_at")
+  id         String      @id @default(uuid())
+  documentId String      @map("document_id")
+  document   LawDocument @relation(fields: [documentId], references: [id], onDelete: Cascade)
+
+  // English text: either a translation of a Nepali original, or the
+  // chunk's own text if it was already English. Always populated.
+  content String @db.Text
+
+  // Nepali source text — populated only when this chunk was translated
+  // (i.e. `content` holds the translation, not the source). Null for
+  // chunks that were already English.
+  originalContent String? @map("original_content") @db.Text
+
+  sectionRef String? @map("section_ref")
+
+  // Embedding of `content` (English). Always populated.
+  embedding Unsupported("vector(1536)")?
+
+  // Embedding of `originalContent` (Nepali). Only populated when
+  // originalContent is non-null — no point double-embedding English-only
+  // chunks. This is what makes hybrid retrieval work: a Nepali query can
+  // match this column directly instead of only ever matching translated
+  // English text.
+  originalEmbedding Unsupported("vector(1536)")? @map("original_embedding")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
 
   @@map("law_document_chunks")
 }
